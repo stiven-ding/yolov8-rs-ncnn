@@ -1,24 +1,32 @@
 import argparse
+
 import time
 from pathlib import Path
 
+import ctypes
+ctypes.CDLL('libX11.so.6').XInitThreads()
+
 import cv2
-
 from numpy import random
-
 
 import pyrealsense2 as rs
 import numpy as np
+from multiprocessing.connection import Client
+
+#from skimage.filters import threshold_multiotsu
+
 #################################
 
-ENABLE_YOLO_DETECT = True
+ENABLE_YOLO_DETECT = False
+ENABLE_AUDIO = True
 
 #################################
 
+# X11 multithread support
 if ENABLE_YOLO_DETECT:
     from ncnn.utils import draw_detection_objects
     from yolov8 import YoloV8s
-
+    
 class Obstable():
     def __init__(self, dist, xyxy, name, prob, mid_xy):
         self.dist = dist
@@ -44,6 +52,20 @@ class Obstable():
 
     def __repr__(self):
         return '{' + str(self.dist) + ', ' + self.dist + ', ' + self.prob + '}'
+
+def ipc_connect():
+    print('Starting IPC')
+    address = ('localhost', 55777)
+    while True:
+        try:
+            conn = Client(address, authkey=b'secret password')
+        except:
+            print('IPC trying to connect')
+            time.sleep(1)
+        else:
+            print('IPC connected')
+            return conn
+            break
 
 
 def sample_distance(depth_image, mid_x, mid_y):
@@ -125,7 +147,6 @@ def detect(save_img=False):
             num_threads=2,
             use_gpu=True,
         )
-        
 
     # Reset camera, bug workaround. Min distance invalid when used
     #print("RS reset start")
@@ -134,6 +155,9 @@ def detect(save_img=False):
     #for dev in devices:
     #    dev.hardware_reset()
     #print("RS reset done")
+
+    if ENABLE_AUDIO:
+        conn = ipc_connect()
 
     print('Enabling RS camera')
     pipeline = rs.pipeline()
@@ -154,7 +178,6 @@ def detect(save_img=False):
 
     t1 = time.perf_counter()
     print(f' ({(1E3 * (t1 - t0)):.1f}ms) boot\n')
-
 
     while True:
         t0 = time.perf_counter()
@@ -178,11 +201,11 @@ def detect(save_img=False):
 
         #depth_to_disparity = rs.disparity_transform(True)
         #disparity_to_depth = rs.disparity_transform(False)
-        #spatial = rs.spatial_filter(smooth_alpha=1,smooth_delta=50,magnitude=5,hole_fill=3)
+        spatial = rs.spatial_filter(smooth_alpha=0.5,smooth_delta=30,magnitude=1,hole_fill=5)
         hole_filling = rs.hole_filling_filter(1)
 
         #depth_frame = depth_to_disparity.process(depth_frame)
-        #depth_frame = spatial.process(depth_frame)
+        depth_frame = spatial.process(depth_frame)
         #depth_frame = disparity_to_depth.process(depth_frame)
         depth_frame = hole_filling.process(depth_frame)
 
@@ -190,7 +213,7 @@ def detect(save_img=False):
         im0 = img.copy()
 
         depth_img = np.asanyarray(depth_frame.get_data())
-        invalid = np.full((480,640),255, dtype=np.uint8)
+        invalid = np.full((480,640),65536, dtype=np.uint16)
         depth_img = np.where(depth_img[:,:] == [0,0], invalid, depth_img)
 
         #depth_img = cv2.bilateralFilter((depth_img/256.0).astype(np.uint8), 9, 75, 75)
@@ -204,6 +227,8 @@ def detect(save_img=False):
         # Process contours
         t2 = time.perf_counter()
         contours = []
+
+        # Linear Thresholding
         c_start, c_step, c_levels = 0.0, 0.5, 5
         for i in range(c_levels):
             depth_range = cv2.inRange(depth_img,c_start/depth_scale, (c_start+c_step)/depth_scale)
@@ -212,6 +237,10 @@ def detect(save_img=False):
                 contours.append(c)
             #cv2.imshow("Result depth" + str(c_start) + " " + str(c_start+c_step),cv2.cvtColor(depth_range, cv2.COLOR_BGR2RGB))
             c_start += c_step
+
+        # Multi-Otsu Threasholding (IP)
+        #thresholds = threshold_multiotsu(depth_img)
+        #regions = np.digitize(depth_img, bins=thresholds)
 
         for c in contours:
             #cv2.convexHull(c)
@@ -225,8 +254,9 @@ def detect(save_img=False):
             mid_x, mid_y = int(M['m10']/M['m00']), int(M['m01']/M['m00'])
             dist = sample_distance(depth_img, mid_x, mid_y)
 
-            obs = Obstable(dist, [x, y, x+w, y+h], '???', -1, [mid_x, mid_y])
-            obstacles.append(obs)
+            if dist > 0:
+                obs = Obstable(dist, [x, y, x+w, y+h], '', -1, [mid_x, mid_y])
+                obstacles.append(obs)
 
 
         # YOLO inference
@@ -244,24 +274,40 @@ def detect(save_img=False):
                 dist = sample_distance(depth_img, mid_x, mid_y)
                 name = net.class_names[int(obj.label)]
 
-                obs = Obstable(dist, xyxy, name, obj.prob, [mid_x, mid_y])
-                obstacles.append(obs)
+                if dist > 0:
+                    obs = Obstable(dist, xyxy, name, obj.prob, [mid_x, mid_y])
+                    obstacles.append(obs)
 
         # Process detections
-        draw_detection_objects(im0, depth_colormap, obstacles)
         obstacles.sort()
+        draw_detection_objects(im0, depth_colormap, obstacles)
 
         t4 = time.perf_counter()
         
         # Print time (inference + NMS)
         print(f' ({(1E3 * (t1 - t0)):.1f}ms) input, ({(1E3 * (t2 - t1)):.1f}ms) filter, ({(1E3 * (t3 - t2)):.1f}ms) cont, ({(1E3 * (t4 - t3)):.1f}ms) yolo, ({(1E3 * (t4 - t0)):.1f}ms) total')
 
+
         # Stream results
+        if ENABLE_AUDIO:      
+            if len(obstacles) > 0:
+                msg = str(obstacles[0].dist) + ',' + str(obstacles[0].mid_xy[0]) + ',' + str(obstacles[0].mid_xy[1]) + ',' + obstacles[0].name
+            else:
+                msg = '10,0,0,'
+
+            try:
+                conn.send(msg)
+            except:
+                conn = ipc_connect()
+
+        #else:   
         cv2.imshow("YOLOv8 result", im0)
         #cv2.imshow("Depth L1 result",cv2.cvtColor(depth_l1_colormap, cv2.COLOR_BGR2RGB))
         cv2.imshow("L result depth", cv2.cvtColor(depth_colormap, cv2.COLOR_BGR2RGB))
+
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
+
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
