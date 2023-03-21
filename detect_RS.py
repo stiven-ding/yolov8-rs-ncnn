@@ -4,7 +4,8 @@ import time
 from pathlib import Path
 
 import ctypes
-ctypes.CDLL('libX11.so.6').XInitThreads()
+
+import otsu
 
 import cv2
 from numpy import random
@@ -17,12 +18,17 @@ from multiprocessing.connection import Client
 
 #################################
 
+# DEBUG CONFIGURATIONS
+
 ENABLE_YOLO_DETECT = False
-ENABLE_AUDIO = True
+ENABLE_AUDIO = False
+ENABLE_SHOW_LAYERS = False
 
 #################################
 
 # X11 multithread support
+ctypes.CDLL('libX11.so.6').XInitThreads()
+
 if ENABLE_YOLO_DETECT:
     from ncnn.utils import draw_detection_objects
     from yolov8 import YoloV8s
@@ -224,24 +230,55 @@ def detect(save_img=False):
         obstacles = []
 
 
-        # Process contours
+        # Contour Detection
         t2 = time.perf_counter()
         contours = []
 
-        # Linear Thresholding
-        c_start, c_step, c_levels = 0.0, 0.5, 5
-        for i in range(c_levels):
-            depth_range = cv2.inRange(depth_img,c_start/depth_scale, (c_start+c_step)/depth_scale)
-            contours_range, _ = cv2.findContours(depth_range,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
-            for c in contours_range:
-                contours.append(c)
-            #cv2.imshow("Result depth" + str(c_start) + " " + str(c_start+c_step),cv2.cvtColor(depth_range, cv2.COLOR_BGR2RGB))
-            c_start += c_step
+        # Modified Two-Stage Multi-Otsu Threasholding
+        otsu_img = (depth_img // 100).astype(np.uint8).clip(0,255)
+        hist = cv2.calcHist(
+            [otsu_img],
+            channels=[0],
+            mask=None,
+            histSize=[256],
+            ranges=[0, 256]
+        )
+        try:
+            thresholds = sorted(otsu.modified_TSMO(hist, M=64, L=256))
+            if len(thresholds) < 1:
+                raise Exception
+            
+            thresh_a, layer = 0, 1
+            for thresh_b in thresholds:
+                depth_range = cv2.inRange(otsu_img, thresh_a, thresh_b)
+                h,w=depth_range.shape[0:2]
+                cv2.rectangle(depth_range,(0,0),(w,h),(0),20) # really thick white rectangle
+                contours_range, _ = cv2.findContours(depth_range,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
+                for c in contours_range:
+                    contours.append(c)
+                if ENABLE_SHOW_LAYERS:
+                    cv2.imshow("Result depth L" + str(layer), cv2.cvtColor(depth_range, cv2.COLOR_BGR2RGB))
+                if layer > 1:
+                    break
+                thresh_a = thresh_b
+                layer = layer + 1
+        except:
+            # Linear Thresholding for Nackup
+            c_start, c_step, c_levels = 0.0, 0.5, 5
+            for i in range(c_levels):
+                depth_range = cv2.inRange(depth_img,c_start/depth_scale, (c_start+c_step)/depth_scale)
+                h,w=depth_range.shape[0:2]
+                cv2.rectangle(depth_range,(0,0),(w,h),(0),20) # really thick white rectangle
+                contours_range, _ = cv2.findContours(depth_range,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
+                for c in contours_range:
+                    contours.append(c)
 
-        # Multi-Otsu Threasholding (IP)
-        #thresholds = threshold_multiotsu(depth_img)
-        #regions = np.digitize(depth_img, bins=thresholds)
+                if ENABLE_SHOW_LAYERS and layer < 3:
+                    cv2.imshow("Result depth L" + str(layer), cv2.cvtColor(depth_range, cv2.COLOR_BGR2RGB))
+                c_start += c_step
+                layer = layer + 1
 
+        # Process Contours
         for c in contours:
             #cv2.convexHull(c)
             size = cv2.contourArea(c)
@@ -300,10 +337,8 @@ def detect(save_img=False):
             except:
                 conn = ipc_connect()
 
-        #else:   
         cv2.imshow("YOLOv8 result", im0)
-        #cv2.imshow("Depth L1 result",cv2.cvtColor(depth_l1_colormap, cv2.COLOR_BGR2RGB))
-        cv2.imshow("L result depth", cv2.cvtColor(depth_colormap, cv2.COLOR_BGR2RGB))
+        cv2.imshow("Depth result", cv2.cvtColor(depth_colormap, cv2.COLOR_BGR2RGB))
 
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break

@@ -103,16 +103,11 @@ def main():
 
         #depth_img = cv2.bilateralFilter((depth_img/256.0).astype(np.uint8), 9, 75, 75)
         img = cv2.medianBlur(img,5)
-
-        img = (img // 128).astype(np.uint8).clip(0,255)
-
-        depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(img, alpha=0.03), cv2.COLORMAP_JET)
-
+        
         L = 256  # number of levels
         M = 64  # number of bins for bin-grouping normalisation
 
         N = L // M
-
         # Calculate histogram
         hist = cv2.calcHist(
             [img],

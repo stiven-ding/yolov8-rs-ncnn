@@ -5,6 +5,8 @@ import pyglet
 pyglet.options["headless"] = True
 import pyglet.media
 
+from multiprocessing.connection import Listener
+
 class AudioQueue(threading.Thread):
 
     def __init__(self, obstacle):
@@ -25,10 +27,10 @@ class AudioQueue(threading.Thread):
 
     def run(self):
         while True:
-            if self.dist < 3:
+            if self.dist < 5:
                 self.generate_sound()
             else:
-                time.sleep(0.2)
+                time.sleep(0.5)
 
     def generate_sound(self):
         #global player 
@@ -52,32 +54,33 @@ class AudioQueue(threading.Thread):
         time.sleep(audio_dur+idle_dur)
         #player.delete()
 
+def main():
+    audio_queue = AudioQueue(None)
+    audio_queue.start()
 
-audio_queue = AudioQueue(None)
-audio_queue.start()
-        
-from multiprocessing.connection import Listener
-address = ('localhost', 55777)     # family is deduced to be 'AF_INET'
-listener = Listener(address, authkey=b'secret password')
-
-while True:
-    print('listening')
-    conn = listener.accept()
-    print('connection accepted from', listener.last_accepted)
-    while True:
-        try:
-            msg = conn.recv()
-            print(msg)
+    address = ('localhost', 55777)     
+    listener = Listener(address, authkey=b'secret password')
             
-            obs = msg.split(',')
-            dist, x, y, name = float(obs[0]), float(obs[1]), float(obs[2]), obs[3]
+    while True:
+        print('waiting for connection')
+        conn = listener.accept()
+        print('connection accepted from', listener.last_accepted)
+        while True:
+            try:
+                msg = conn.recv()
+                print(msg)
+                
+                obs = msg.split(',')
+                dist, x, y, name = float(obs[0]), float(obs[1]), float(obs[2]), obs[3]
 
-            audio_queue.update(dist, x, y, name)
+                audio_queue.update(dist, x, y, name)
 
-            if msg == 'close':
-                conn.close()
+                if msg == 'close':
+                    conn.close()
+                    break
+            except:
+                print('disconnected')
                 break
-        except:
-            print('disconnected')
-            break
-        
+
+if __name__ == '__main__':
+    main()
