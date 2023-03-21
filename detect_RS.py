@@ -20,8 +20,8 @@ from multiprocessing.connection import Client
 
 # DEBUG CONFIGURATIONS
 
-ENABLE_YOLO_DETECT = False
-ENABLE_AUDIO = False
+ENABLE_YOLO_DETECT = True
+ENABLE_AUDIO = True
 ENABLE_SHOW_LAYERS = False
 
 #################################
@@ -227,7 +227,7 @@ def detect(save_img=False):
         depth_colormap = cv2.applyColorMap(cv2.convertScaleAbs(depth_img, alpha=0.03), cv2.COLORMAP_JET)
 
         # All obstacles list
-        obstacles = []
+        obstacles, yolo_obstacles = [], []
 
 
         # Contour Detection
@@ -264,7 +264,7 @@ def detect(save_img=False):
                 layer = layer + 1
         except:
             # Linear Thresholding for Nackup
-            c_start, c_step, c_levels = 0.0, 0.5, 5
+            c_start, c_step, c_levels, layer = 0.0, 0.5, 5, 1
             for i in range(c_levels):
                 depth_range = cv2.inRange(depth_img,c_start/depth_scale, (c_start+c_step)/depth_scale)
                 h,w=depth_range.shape[0:2]
@@ -314,9 +314,11 @@ def detect(save_img=False):
                 if dist > 0:
                     obs = Obstable(dist, xyxy, name, obj.prob, [mid_x, mid_y])
                     obstacles.append(obs)
+                    yolo_obstacles.append(obs)
 
         # Process detections
         obstacles.sort()
+        yolo_obstacles.sort()
         draw_detection_objects(im0, depth_colormap, obstacles)
 
         t4 = time.perf_counter()
@@ -329,6 +331,11 @@ def detect(save_img=False):
         if ENABLE_AUDIO:      
             if len(obstacles) > 0:
                 msg = str(obstacles[0].dist) + ',' + str(obstacles[0].mid_xy[0]) + ',' + str(obstacles[0].mid_xy[1]) + ',' + obstacles[0].name
+                # obs[0] does not have name but yolo_obs[0] has name and dist are close
+                if len(yolo_obstacles) > 0 and obstacles[0].name == '' and yolo_obstacles[0].name != '' and yolo_obstacles[0].dist - obstacles[0].dist < 0.1:
+                    msg = str(yolo_obstacles[0].dist) + ',' + str(yolo_obstacles[0].mid_xy[0]) + ',' + str(yolo_obstacles[0].mid_xy[1]) + ',' + yolo_obstacles[0].name
+
+                    
             else:
                 msg = '10,0,0,'
 
