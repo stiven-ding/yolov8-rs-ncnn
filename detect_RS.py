@@ -244,6 +244,8 @@ def detect(save_img=False):
             ranges=[0, 256]
         )
         try:
+            raise Exception
+
             thresholds = sorted(otsu.modified_TSMO(hist, M=64, L=256))
             if len(thresholds) < 1:
                 raise Exception
@@ -252,13 +254,13 @@ def detect(save_img=False):
             for thresh_b in thresholds:
                 depth_range = cv2.inRange(otsu_img, thresh_a, thresh_b)
                 h,w=depth_range.shape[0:2]
-                cv2.rectangle(depth_range,(0,0),(w,h),(0),20) # really thick white rectangle
+                cv2.rectangle(depth_range,(0,0),(w,h),(0),50) # really thick white rectangle
                 contours_range, _ = cv2.findContours(depth_range,cv2.RETR_EXTERNAL,cv2.CHAIN_APPROX_SIMPLE)
                 for c in contours_range:
                     contours.append(c)
                 if ENABLE_SHOW_LAYERS:
                     cv2.imshow("Result depth L" + str(layer), cv2.cvtColor(depth_range, cv2.COLOR_BGR2RGB))
-                if layer > 1:
+                if layer > 2:
                     break
                 thresh_a = thresh_b
                 layer = layer + 1
